@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS orders (
     status          TEXT    NOT NULL CHECK (status IN ('PENDING_PAYMENT', 'PAYMENT_UNCERTAIN', 'PAID', 'REJECTED')),
     failure_reason  TEXT,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    reconciled_at   TEXT    -- set when the final state was reached by querying the payment
 );
 
 CREATE TABLE IF NOT EXISTS reservations (

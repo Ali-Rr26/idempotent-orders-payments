@@ -1,4 +1,11 @@
-"""Order lifecycle: create the order, reserve stock and charge the payment."""
+"""Order lifecycle: idempotent creation, stock reservation, payment, recovery and compensation.
+
+State machine:
+    PENDING_PAYMENT ──approved──► PAID      (reservation CONSUMED)
+          │        ──rejected──► REJECTED  (reservation RELEASED, stock returned once)
+          └─ lost response ──► PAYMENT_UNCERTAIN ──reconcile──► PAID | REJECTED
+    No stock: REJECTED / OUT_OF_STOCK, with no reservation and no charge.
+"""
 
 import hashlib
 import json
@@ -8,12 +15,13 @@ import payment_client
 from errors import ApiError
 
 VALID_MODES = ("approve", "reject", "timeout")
+OPEN_STATES = ("PENDING_PAYMENT", "PAYMENT_UNCERTAIN")
 NOW = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
 ORDER_SELECT = (
     "SELECT o.id, o.idempotency_key, o.status, o.failure_reason, o.product_id, "
     "o.quantity, o.amount_cents, o.payment_key, o.payment_mode, "
-    "o.created_at, o.updated_at, "
+    "o.created_at, o.updated_at, o.reconciled_at, "
     "r.status AS reservation_status, r.released_at AS reservation_released_at "
     "FROM orders o LEFT JOIN reservations r ON r.order_id = o.id"
 )
@@ -44,12 +52,90 @@ def validate_order_request(payload):
 
 
 def request_hash(order_request):
+    # Hash of the normalized request (defaults applied), so {"product_id": 1}
+    # and {"product_id": 1, "quantity": 1} count as the same intent.
     canonical = json.dumps(order_request, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def create_order(conn, idempotency_key, order_request):
-    """Run the order flow. Returns (order, http_status)."""
+def place_order(conn, idempotency_key, order_request):
+    """Create the order once per key. Returns (order, replayed)."""
+    existing = _find_by_key(conn, idempotency_key)
+    if existing:
+        return _replay(conn, existing, order_request), True
+
+    order_id = _insert_and_reserve(conn, idempotency_key, order_request)
+    if order_id is None:
+        # Lost the race against a concurrent request with the same key.
+        return _replay(conn, _find_by_key(conn, idempotency_key), order_request), True
+
+    order = get_order(conn, order_id)
+    if order["status"] == "PENDING_PAYMENT":
+        _charge(conn, order)
+    return get_order(conn, order_id), False
+
+
+def reconcile(conn, order):
+    """Resolve an open order by asking the payment service what happened.
+
+    Never charges blindly: it first looks the payment up by its key and only
+    re-sends the charge (with the same key, so the mock deduplicates it) when
+    the payment service confirms it never recorded one.
+    """
+    if order["status"] not in OPEN_STATES:
+        return order
+
+    try:
+        payment = payment_client.get_payment(order["payment_key"])
+        if payment is None:
+            payment = payment_client.create_payment(
+                order["payment_key"], order["id"], order["amount_cents"], order["payment_mode"])
+    except payment_client.PaymentUncertain as exc:
+        _set_status(conn, order["id"], "PAYMENT_UNCERTAIN", str(exc))
+        return get_order(conn, order["id"])
+
+    _apply_payment(conn, order["id"], payment, reconciled=True)
+    return get_order(conn, order["id"])
+
+
+def get_order(conn, order_id):
+    row = conn.execute(f"{ORDER_SELECT} WHERE o.id = ?", (order_id,)).fetchone()
+    return _serialize(row) if row else None
+
+
+def list_orders(conn):
+    rows = conn.execute(f"{ORDER_SELECT} ORDER BY o.id").fetchall()
+    return [_serialize(row) for row in rows]
+
+
+def _find_by_key(conn, idempotency_key):
+    row = conn.execute(
+        "SELECT id, request_hash FROM orders WHERE idempotency_key = ?", (idempotency_key,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _replay(conn, existing, order_request):
+    order = get_order(conn, existing["id"])
+    if existing["request_hash"] != request_hash(order_request):
+        raise ApiError(
+            422, "idempotency-key-reused", "Idempotency-Key reutilizada con un cuerpo distinto",
+            f"La clave '{order['idempotency_key']}' ya se usó para el pedido #{order['id']} "
+            f"(producto {order['product_id']}, cantidad {order['quantity']}, "
+            f"modo de pago {order['payment_mode']}). Si es un reintento, reenvía exactamente "
+            "el mismo cuerpo; si es otra compra, usa una clave nueva.",
+            idempotency_key=order["idempotency_key"],
+            existing_order_id=order["id"],
+        )
+    # A retry of an open order is the natural moment to find out what happened.
+    return reconcile(conn, order)
+
+
+def _insert_and_reserve(conn, idempotency_key, order_request):
+    """Insert the order and reserve stock in one transaction.
+
+    Returns the new order id, or None if the key already exists.
+    """
     product = conn.execute(
         "SELECT id, price_cents FROM products WHERE id = ?", (order_request["product_id"],)
     ).fetchone()
@@ -59,10 +145,6 @@ def create_order(conn, idempotency_key, order_request):
                        product_id=order_request["product_id"])
 
     quantity = order_request["quantity"]
-    amount_cents = product["price_cents"] * quantity
-    payment_key = f"pay-{idempotency_key}"
-
-    # Step 1: order + stock reservation in one local transaction.
     conn.execute("BEGIN IMMEDIATE")
     try:
         cursor = conn.execute(
@@ -70,7 +152,8 @@ def create_order(conn, idempotency_key, order_request):
             "amount_cents, payment_key, payment_mode, status) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING_PAYMENT')",
             (idempotency_key, request_hash(order_request), product["id"], quantity,
-             amount_cents, payment_key, order_request["payment_mode"]),
+             product["price_cents"] * quantity, f"pay-{idempotency_key}",
+             order_request["payment_mode"]),
         )
         order_id = cursor.lastrowid
 
@@ -96,63 +179,74 @@ def create_order(conn, idempotency_key, order_request):
         conn.execute("COMMIT")
     except sqlite3.IntegrityError:
         conn.execute("ROLLBACK")
-        # TODO(F4): replay the stored result or answer 422 when the body differs.
-        raise ApiError(409, "idempotency-key-in-use", "Idempotency-Key ya utilizada",
-                       f"Ya existe un pedido con la clave '{idempotency_key}'.",
-                       idempotency_key=idempotency_key)
+        return None
     except Exception:
         conn.execute("ROLLBACK")
         raise
+    return order_id
 
-    if not reserved:
-        order = get_order(conn, order_id)
-        raise ApiError(409, "out-of-stock", "Sin stock suficiente",
-                       f"No hay stock suficiente del producto #{product['id']} para "
-                       f"{quantity} unidad(es). El pedido quedó registrado como REJECTED.",
-                       order=order)
 
-    # Step 2: charge outside the transaction; the network call must not hold the DB lock.
+def _charge(conn, order):
+    # Called outside any transaction: the network call must not hold the DB lock.
     try:
         payment = payment_client.create_payment(
-            payment_key, order_id, amount_cents, order_request["payment_mode"])
+            order["payment_key"], order["id"], order["amount_cents"], order["payment_mode"])
     except payment_client.PaymentUncertain as exc:
-        _set_status(conn, order_id, "PAYMENT_UNCERTAIN", str(exc))
-        return get_order(conn, order_id), 202
+        _set_status(conn, order["id"], "PAYMENT_UNCERTAIN", str(exc))
+        return
+    _apply_payment(conn, order["id"], payment, reconciled=False)
 
-    # Step 3: apply the payment outcome.
+
+def _apply_payment(conn, order_id, payment, reconciled):
     if payment["status"] == "APPROVED":
-        _mark_paid(conn, order_id)
-        return get_order(conn, order_id), 201
-
-    # TODO(F6): release the reservation (compensation) before finishing as REJECTED.
-    _set_status(conn, order_id, "REJECTED", "PAYMENT_REJECTED")
-    order = get_order(conn, order_id)
-    raise ApiError(402, "payment-rejected", "Pago rechazado",
-                   "El servicio de pagos rechazó el cobro. El pedido quedó como REJECTED.",
-                   order=order)
+        _mark_paid(conn, order_id, reconciled)
+    else:
+        _compensate(conn, order_id, reconciled)
 
 
-def get_order(conn, order_id):
-    row = conn.execute(f"{ORDER_SELECT} WHERE o.id = ?", (order_id,)).fetchone()
-    return _serialize(row) if row else None
-
-
-def list_orders(conn):
-    rows = conn.execute(f"{ORDER_SELECT} ORDER BY o.id").fetchall()
-    return [_serialize(row) for row in rows]
-
-
-def _mark_paid(conn, order_id):
+def _mark_paid(conn, order_id, reconciled):
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            f"UPDATE orders SET status = 'PAID', failure_reason = NULL, updated_at = {NOW} "
+            f"UPDATE orders SET status = 'PAID', failure_reason = NULL, updated_at = {NOW}, "
+            f"reconciled_at = CASE WHEN ? THEN {NOW} END "
             "WHERE id = ? AND status IN ('PENDING_PAYMENT', 'PAYMENT_UNCERTAIN')",
-            (order_id,),
+            (reconciled, order_id),
         )
         conn.execute(
             "UPDATE reservations SET status = 'CONSUMED' WHERE order_id = ? AND status = 'RESERVED'",
             (order_id,),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _compensate(conn, order_id, reconciled):
+    """Release the reservation and return the stock exactly once, then reject the order."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        reservation = conn.execute(
+            "SELECT product_id, quantity FROM reservations WHERE order_id = ?", (order_id,)
+        ).fetchone()
+        # Only the call that flips RESERVED -> RELEASED returns the stock;
+        # any repeated compensation finds rowcount 0 and changes nothing.
+        released = conn.execute(
+            f"UPDATE reservations SET status = 'RELEASED', released_at = {NOW} "
+            "WHERE order_id = ? AND status = 'RESERVED'",
+            (order_id,),
+        ).rowcount
+        if released:
+            conn.execute(
+                "UPDATE products SET stock = stock + ? WHERE id = ?",
+                (reservation["quantity"], reservation["product_id"]),
+            )
+        conn.execute(
+            f"UPDATE orders SET status = 'REJECTED', failure_reason = 'PAYMENT_REJECTED', "
+            f"updated_at = {NOW}, reconciled_at = CASE WHEN ? THEN {NOW} END "
+            "WHERE id = ? AND status IN ('PENDING_PAYMENT', 'PAYMENT_UNCERTAIN')",
+            (reconciled, order_id),
         )
         conn.execute("COMMIT")
     except Exception:

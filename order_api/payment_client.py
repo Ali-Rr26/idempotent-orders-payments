@@ -1,5 +1,7 @@
 """HTTP client for the Payment Mock API."""
 
+from urllib.parse import quote
+
 import requests
 
 import config
@@ -27,5 +29,24 @@ def create_payment(payment_key, order_id, amount_cents, mode):
         raise PaymentUncertain(f"No se pudo contactar al servicio de pagos: {exc.__class__.__name__}") from exc
 
     if response.status_code not in (200, 201):
+        raise PaymentUncertain(f"Respuesta inesperada del servicio de pagos: HTTP {response.status_code}")
+    return response.json()
+
+
+def get_payment(payment_key):
+    """Return the persisted payment, or None if the payment service never recorded it."""
+    try:
+        response = requests.get(
+            f"{config.PAYMENT_URL}/payments/{quote(payment_key, safe='')}",
+            timeout=config.PAYMENT_TIMEOUT_S,
+        )
+    except requests.Timeout as exc:
+        raise PaymentUncertain(f"Timeout después de {config.PAYMENT_TIMEOUT_S}s consultando el pago") from exc
+    except requests.RequestException as exc:
+        raise PaymentUncertain(f"No se pudo contactar al servicio de pagos: {exc.__class__.__name__}") from exc
+
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
         raise PaymentUncertain(f"Respuesta inesperada del servicio de pagos: HTTP {response.status_code}")
     return response.json()

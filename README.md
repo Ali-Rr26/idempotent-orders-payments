@@ -8,7 +8,7 @@ Postman ──► Order API :5000 (Flask + orders.db) ──► Payment Mock API
 
 El enunciado completo está en [reto_tecnico_pedidos_pagos_idempotencia.md](reto_tecnico_pedidos_pagos_idempotencia.md).
 
-> 🚧 En construcción: ya funcionan el mock de pagos (idempotente, con aprobación, rechazo y timeout) y el flujo principal de pedidos (reserva de stock + cobro). Pendiente: reintentos idempotentes de pedidos, reconciliación de pagos inciertos y compensación de rechazos.
+> 🚧 En construcción: la lógica de ambos servicios está completa (idempotencia, recuperación y compensación). Pendiente: colección de Postman, consultas de evidencia y documentación de entrega.
 
 ## Requisitos
 
@@ -96,7 +96,8 @@ Las dos formas de ejecución usan las mismas variables de entorno; en local se a
 | Order API | GET | `/products` | Productos y stock actual |
 | Order API | POST | `/orders` | Crea un pedido, reserva stock y cobra (requiere `Idempotency-Key`) |
 | Order API | GET | `/orders` | Todos los pedidos con su reserva |
-| Order API | GET | `/orders/{id}` | Un pedido con su reserva |
+| Order API | GET | `/orders/{id}` | Un pedido con su reserva (si está abierto, primero lo reconcilia) |
+| Order API | POST | `/orders/{id}/reconcile` | Consulta el pago y resuelve un pedido `PAYMENT_UNCERTAIN` |
 | Order API | POST | `/admin/reset` | Borra pedidos y reservas y restaura el stock inicial |
 | Payment Mock | GET | `/health` | Estado del servicio y de la base |
 | Payment Mock | POST | `/payments` | Registra un cobro, una sola vez por `Idempotency-Key` |
@@ -122,10 +123,46 @@ Content-Type: application/json
 |---|---|---|
 | Pago aprobado | 201 | `PAID`, reserva `CONSUMED` |
 | Respuesta del pago perdida (timeout, error de red, 5xx) | 202 | `PAYMENT_UNCERTAIN`, reserva `RESERVED` |
-| Pago rechazado | 402 | `REJECTED` (`PAYMENT_REJECTED`) |
+| Pago rechazado | 402 | `REJECTED` (`PAYMENT_REJECTED`), reserva `RELEASED` y stock devuelto |
 | Sin stock | 409 | `REJECTED` (`OUT_OF_STOCK`), sin reserva ni cobro |
+| Misma clave y mismo cuerpo | El mismo código de arriba según el estado actual + `Idempotent-Replayed: true` | Sin cambios: no se crea otro pedido, reserva ni cobro |
+| Misma clave y cuerpo distinto | 422 | Sin cambios; el mensaje indica el pedido existente |
 
 El stock se descuenta con `UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?` dentro de la misma transacción que crea el pedido, así nunca queda negativo aunque lleguen compras simultáneas.
+
+## Cómo se garantiza "como máximo un efecto por clave"
+
+### Estados del pedido
+
+```
+PENDING_PAYMENT ──aprobado──► PAID      (reserva CONSUMED)
+      │         ──rechazado─► REJECTED  (reserva RELEASED, stock devuelto una vez)
+      └─ respuesta perdida ─► PAYMENT_UNCERTAIN ──reconciliación──► PAID | REJECTED
+Sin stock: REJECTED / OUT_OF_STOCK (sin reserva ni cobro)
+```
+
+`PAID` y `REJECTED` son finales: ningún `UPDATE` los sobrescribe (todos llevan `WHERE status IN ('PENDING_PAYMENT', 'PAYMENT_UNCERTAIN')`).
+
+### Idempotencia
+
+- `orders.idempotency_key` es `UNIQUE`. Si dos solicitudes con la misma clave llegan a la vez, solo una inserta y la otra recibe el resultado de la primera.
+- `orders.request_hash` guarda un SHA-256 del cuerpo normalizado. Con la misma clave y otro cuerpo se responde 422.
+- La clave del cobro es estable: `payment_key = "pay-" + Idempotency-Key`, y `payments.payment_key` también es `UNIQUE` en el mock. Aunque la Order API reenvíe el cobro, el mock nunca registra dos.
+
+### Recuperación (respuesta perdida)
+
+Cuando el cobro termina en timeout, error de red o 5xx, el pedido queda en `PAYMENT_UNCERTAIN` con la reserva intacta. La reconciliación se dispara al reenviar `POST /orders` con la misma clave, al consultar `GET /orders/{id}` o con `POST /orders/{id}/reconcile`. En los tres casos:
+
+1. Consulta `GET /payments/{payment_key}` al mock, **sin cobrar**.
+2. Si el pago es `APPROVED`, el pedido pasa a `PAID`; si es `REJECTED`, se compensa y queda `REJECTED`.
+3. Si el mock responde 404 (el cobro nunca llegó), reenvía el cobro con **la misma** `payment_key`.
+4. Si el mock no responde, el pedido sigue en `PAYMENT_UNCERTAIN` y se puede reintentar más tarde.
+
+`orders.reconciled_at` queda con fecha cuando el estado final se obtuvo por reconciliación, como evidencia de que el pedido se recuperó.
+
+### Compensación (pago rechazado)
+
+En una sola transacción, `UPDATE reservations SET status = 'RELEASED' WHERE order_id = ? AND status = 'RESERVED'`. Solo si ese `UPDATE` cambió una fila se devuelve el stock, así que repetir la compensación no lo devuelve dos veces.
 
 ### Simulación de pagos
 

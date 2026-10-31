@@ -5,7 +5,7 @@ from flask import Flask, jsonify, request
 import config
 import db
 import orders
-from errors import ApiError, register_error_handlers
+from errors import ApiError, problem, register_error_handlers
 
 MAX_KEY_LENGTH = 200
 
@@ -36,11 +36,8 @@ def create_app():
         idempotency_key = _require_idempotency_key()
         order_request = orders.validate_order_request(request.get_json(silent=True))
 
-        order, status = orders.create_order(db.get_db(), idempotency_key, order_request)
-
-        response = jsonify(order)
-        response.headers["Location"] = f"/orders/{order['id']}"
-        return response, status
+        order, replayed = orders.place_order(db.get_db(), idempotency_key, order_request)
+        return _order_response(order, replayed)
 
     @app.get("/orders")
     def list_orders():
@@ -48,11 +45,14 @@ def create_app():
 
     @app.get("/orders/<int:order_id>")
     def get_order(order_id):
-        order = orders.get_order(db.get_db(), order_id)
-        if order is None:
-            raise ApiError(404, "order-not-found", "Pedido no encontrado",
-                           f"No existe el pedido #{order_id}.", order_id=order_id)
-        return jsonify(order)
+        # Reading an open order reconciles it, so a client polling the order recovers too.
+        conn = db.get_db()
+        return jsonify(orders.reconcile(conn, _find_order(conn, order_id)))
+
+    @app.post("/orders/<int:order_id>/reconcile")
+    def reconcile_order(order_id):
+        conn = db.get_db()
+        return jsonify(orders.reconcile(conn, _find_order(conn, order_id)))
 
     @app.post("/admin/reset")
     def admin_reset():
@@ -60,6 +60,44 @@ def create_app():
         return jsonify(status="reset", service="order-api")
 
     return app
+
+
+def _find_order(conn, order_id):
+    order = orders.get_order(conn, order_id)
+    if order is None:
+        raise ApiError(404, "order-not-found", "Pedido no encontrado",
+                       f"No existe el pedido #{order_id}.", order_id=order_id)
+    return order
+
+
+def _order_response(order, replayed):
+    """Map the order state to the HTTP response of POST /orders.
+
+    The code depends only on the persisted state, so a retry with the same key
+    gets the same answer as the original request (plus Idempotent-Replayed).
+    """
+    if order["status"] == "PAID":
+        response = jsonify(order)
+        response.status_code = 201
+    elif order["status"] in orders.OPEN_STATES:
+        response = jsonify(order)
+        response.status_code = 202
+        response.headers["Retry-After"] = "2"
+    elif order["failure_reason"] == "OUT_OF_STOCK":
+        response = problem(409, "out-of-stock", "Sin stock suficiente",
+                           f"No hay stock suficiente del producto #{order['product_id']} para "
+                           f"{order['quantity']} unidad(es). El pedido quedó registrado como REJECTED.",
+                           order=order)
+    else:
+        response = problem(402, "payment-rejected", "Pago rechazado",
+                           "El servicio de pagos rechazó el cobro. La reserva de inventario se "
+                           "liberó y el pedido quedó como REJECTED.",
+                           order=order)
+
+    response.headers["Location"] = f"/orders/{order['id']}"
+    if replayed:
+        response.headers["Idempotent-Replayed"] = "true"
+    return response
 
 
 def _require_idempotency_key():
