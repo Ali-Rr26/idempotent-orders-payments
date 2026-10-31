@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# SQLite (se crean al arrancar cada servicio)
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Bind mounts de Docker
+data/
+
+# Entorno / editores
+.env
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
