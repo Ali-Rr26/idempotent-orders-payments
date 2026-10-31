@@ -8,7 +8,7 @@ Postman ──► Order API :5000 (Flask + orders.db) ──► Payment Mock API
 
 El enunciado completo está en [reto_tecnico_pedidos_pagos_idempotencia.md](reto_tecnico_pedidos_pagos_idempotencia.md).
 
-> 🚧 En construcción: la lógica de ambos servicios está completa (idempotencia, recuperación y compensación). Pendiente: colección de Postman, consultas de evidencia y documentación de entrega.
+> 🚧 En construcción: la lógica de ambos servicios, la colección de Postman y las consultas de evidencia están completas. Pendiente: documentación de entrega (PDF y video).
 
 ## Requisitos
 
@@ -187,6 +187,54 @@ Todos los errores siguen [RFC 9457 Problem Details](https://www.rfc-editor.org/r
 }
 ```
 
+## Pruebas
+
+### Colección de Postman
+
+[postman/idempotent-orders-payments.postman_collection.json](postman/idempotent-orders-payments.postman_collection.json) cubre los cinco casos obligatorios con tests automáticos (29 requests, 99 assertions).
+
+1. Levantar ambos servicios (Docker o local).
+2. En Postman: **Import** → seleccionar el archivo de la colección.
+3. Abrir la colección → **Run** → ejecutar todo en orden.
+
+| Carpeta | Qué demuestra |
+|---|---|
+| 0. Preparación | Reinicia ambas bases y genera claves nuevas (`{{$guid}}`) para la corrida |
+| 1. Flujo exitoso | 1 pedido `PAID`, 1 reserva `CONSUMED`, 1 cobro `APPROVED`, stock −1 |
+| 2. Misma solicitud repetida | Mismo pedido + `Idempotent-Replayed`, sin cambios de stock ni cobros extra; 422 con otro cuerpo |
+| 3. Respuesta perdida después del cobro | 202 `PAYMENT_UNCERTAIN` → el mock ya tiene el cobro → el reintento reconcilia a `PAID` con un solo cobro |
+| 4. Pago rechazado | 402 `REJECTED`, reserva `RELEASED`, stock devuelto una sola vez aunque se reenvíe |
+| 5. Otra intención con la última unidad | La clave A compra; la clave B recibe 409 `OUT_OF_STOCK`, sin cobro; stock 0 |
+| 6. Evidencia global | Ninguna clave de pedido ni de pago repetida; ningún pedido abierto |
+
+Las URLs son variables de la colección (`order_url`, `payment_url`; por defecto `http://127.0.0.1:5000` y `:5001`). Dentro de una corrida, reenviar una request reutiliza su clave, es decir, el mismo intento.
+
+Desde la terminal (requiere Node.js):
+
+```bash
+npx newman run postman/idempotent-orders-payments.postman_collection.json
+```
+
+### Evidencia en SQLite
+
+[docs/evidencia.sql](docs/evidencia.sql) tiene las consultas que prueban que no hubo efectos duplicados: listado de pedidos, reservas y pagos; duplicados por clave (deben salir vacíos); efectos por pedido; inconsistencias entre pedido y pago; y pedidos recuperados por reconciliación.
+
+```bash
+python docs/evidencia.py
+```
+
+El script detecta si las bases son de Docker (`data/`) o locales y abre ambas en solo lectura. También se pueden ejecutar las consultas en DB Browser for SQLite abriendo `orders.db` y adjuntando `payments.db` con el alias `pay`.
+
+### Escenario extra: servicio de pagos caído
+
+No está en la colección porque requiere detener un servicio:
+
+1. `docker compose stop payment-mock`
+2. `POST /orders` con una clave nueva → 202 `PAYMENT_UNCERTAIN`
+3. `POST /orders/{id}/reconcile` → sigue `PAYMENT_UNCERTAIN`, porque no hay a quién preguntar
+4. `docker compose start payment-mock`
+5. `POST /orders/{id}/reconcile` → el mock responde 404, se envía el cobro con la misma `payment_key` → `PAID`
+
 ## Estructura
 
 ```
@@ -201,6 +249,10 @@ Todos los errores siguen [RFC 9457 Problem Details](https://www.rfc-editor.org/r
 │   └── Dockerfile
 ├── payment_mock_api/     Payment Mock API (Flask + SQLite propia)
 │   └── payments.py       registro idempotente de cobros
+├── postman/              colección exportada con los cinco casos
+├── docs/
+│   ├── evidencia.sql     consultas de evidencia (sin duplicados)
+│   └── evidencia.py      ejecuta las consultas sobre ambas bases
 ├── docker-compose.yml
 ├── run.ps1 / run.sh      ejecución local de ambos servicios
 └── requirements.txt      dependencias de ambos servicios para un venv local

@@ -1,0 +1,1179 @@
+{
+  "info": {
+    "name": "Idempotent Orders & Payments",
+    "description": "Casos obligatorios del reto: pedidos, pagos simulados e idempotencia.\n\nCorrer la colección completa en orden (Collection Runner o `newman run`). La carpeta 0 reinicia ambos servicios y genera claves nuevas; dentro de una corrida, reenviar una request reutiliza su clave (mismo intento).\n\nRequiere los dos servicios levantados (local o `docker compose up`).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "order_url",
+      "value": "http://127.0.0.1:5000"
+    },
+    {
+      "key": "payment_url",
+      "value": "http://127.0.0.1:5001"
+    },
+    {
+      "key": "key_ok",
+      "value": ""
+    },
+    {
+      "key": "key_timeout",
+      "value": ""
+    },
+    {
+      "key": "key_reject",
+      "value": ""
+    },
+    {
+      "key": "key_a",
+      "value": ""
+    },
+    {
+      "key": "key_b",
+      "value": ""
+    },
+    {
+      "key": "order_ok_id",
+      "value": ""
+    },
+    {
+      "key": "order_timeout_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Preparación",
+      "description": "Reinicia ambas bases, genera claves nuevas y verifica el stock inicial.",
+      "item": [
+        {
+          "name": "Reiniciar Order API",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/admin/reset",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "admin",
+                "reset"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Claves nuevas en cada corrida: la misma clave dentro de la corrida = mismo intento.",
+                  "[\"key_ok\", \"key_timeout\", \"key_reject\", \"key_a\", \"key_b\"].forEach(name =>",
+                  "  pm.collectionVariables.set(name, name.replace(\"key_\", \"\") + \"-\" + pm.variables.replaceIn(\"{{$guid}}\"))",
+                  ");"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reiniciar Payment Mock",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/admin/reset",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "admin",
+                "reset"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock inicial",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 5\", () => pm.expect(stock(1)).to.eql(5));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Flujo exitoso",
+      "description": "Un pedido, una reserva, un cobro y estado final PAID.",
+      "item": [
+        {
+          "name": "Crear pedido (pago aprobado)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_ok}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.json();",
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Pedido PAID\", () => pm.expect(order.status).to.eql(\"PAID\"));",
+                  "pm.test(\"Reserva CONSUMED\", () => pm.expect(order.reservation.status).to.eql(\"CONSUMED\"));",
+                  "pm.test(\"No es un replay\", () => pm.expect(pm.response.headers.has(\"Idempotent-Replayed\")).to.be.false);",
+                  "pm.collectionVariables.set(\"order_ok_id\", order.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock descontado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 4\", () => pm.expect(stock(1)).to.eql(4));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Un cobro aprobado en el mock",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = \"pay-\" + pm.collectionVariables.get(\"key_ok\");",
+                  "const matches = pm.response.json().filter(p => p.payment_key === key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Existe exactamente 1 cobro para \" + key, () => pm.expect(matches.length).to.eql(1));",
+                  "pm.test(\"El cobro está APPROVED\", () => pm.expect(matches[0].status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Misma solicitud repetida",
+      "description": "Reenviar con la misma clave devuelve el resultado conocido sin duplicar efectos.",
+      "item": [
+        {
+          "name": "Reenviar pedido (misma clave)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_ok}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.json();",
+                  "pm.test(\"Status 201 (mismo resultado)\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Header Idempotent-Replayed: true\", () => pm.response.to.have.header(\"Idempotent-Replayed\", \"true\"));",
+                  "pm.test(\"Mismo pedido que el original\", () => pm.expect(order.id).to.eql(Number(pm.collectionVariables.get(\"order_ok_id\"))));",
+                  "pm.test(\"Sigue PAID\", () => pm.expect(order.status).to.eql(\"PAID\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reenviar pedido otra vez",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_ok}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Header Idempotent-Replayed: true\", () => pm.response.to.have.header(\"Idempotent-Replayed\", \"true\"));",
+                  "pm.test(\"Mismo pedido que el original\", () => pm.expect(pm.response.json().id).to.eql(Number(pm.collectionVariables.get(\"order_ok_id\"))));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock sin cambios",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 4\", () => pm.expect(stock(1)).to.eql(4));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sigue habiendo un solo cobro",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = \"pay-\" + pm.collectionVariables.get(\"key_ok\");",
+                  "const matches = pm.response.json().filter(p => p.payment_key === key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Existe exactamente 1 cobro para \" + key, () => pm.expect(matches.length).to.eql(1));",
+                  "pm.test(\"El cobro está APPROVED\", () => pm.expect(matches[0].status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Misma clave con otro cuerpo (422)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_ok}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 3,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const problem = pm.response.json();",
+                  "pm.test(\"Status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Content-Type problem+json\", () => pm.expect(pm.response.headers.get(\"Content-Type\")).to.include(\"application/problem+json\"));",
+                  "pm.test(\"Tipo idempotency-key-reused\", () => pm.expect(problem.type).to.include(\"idempotency-key-reused\"));",
+                  "pm.test(\"Indica el pedido existente\", () => pm.expect(problem.existing_order_id).to.eql(Number(pm.collectionVariables.get(\"order_ok_id\"))));",
+                  "pm.test(\"Incluye un mensaje explicativo\", () => pm.expect(problem.detail).to.be.a(\"string\").and.not.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock sigue sin cambios",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 4\", () => pm.expect(stock(1)).to.eql(4));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Respuesta perdida después del cobro",
+      "description": "El mock registra el cobro y tarda 5 s en responder; la Order API corta a los 2 s y deja el pedido PAYMENT_UNCERTAIN. El reintento con la misma clave consulta el pago y reconcilia sin cobrar de nuevo.",
+      "item": [
+        {
+          "name": "Crear pedido (timeout)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_timeout}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"timeout\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.json();",
+                  "pm.test(\"Status 202 (resultado incierto)\", () => pm.response.to.have.status(202));",
+                  "pm.test(\"Pedido PAYMENT_UNCERTAIN\", () => pm.expect(order.status).to.eql(\"PAYMENT_UNCERTAIN\"));",
+                  "pm.test(\"Reserva sigue RESERVED\", () => pm.expect(order.reservation.status).to.eql(\"RESERVED\"));",
+                  "pm.test(\"Indica el motivo\", () => pm.expect(order.failure_reason).to.include(\"Timeout\"));",
+                  "pm.collectionVariables.set(\"order_timeout_id\", order.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "El mock ya registró el cobro",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments/pay-{{key_timeout}}",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments",
+                "pay-{{key_timeout}}"
+              ]
+            },
+            "description": "Demuestra que el cobro ocurrió aunque la Order API no recibió la respuesta."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"El cobro existe y está APPROVED\", () => pm.expect(pm.response.json().status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reintentar pedido (misma clave)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_timeout}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"timeout\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.json();",
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Header Idempotent-Replayed: true\", () => pm.response.to.have.header(\"Idempotent-Replayed\", \"true\"));",
+                  "pm.test(\"Mismo pedido\", () => pm.expect(order.id).to.eql(Number(pm.collectionVariables.get(\"order_timeout_id\"))));",
+                  "pm.test(\"Reconciliado a PAID\", () => pm.expect(order.status).to.eql(\"PAID\"));",
+                  "pm.test(\"reconciled_at registrado\", () => pm.expect(order.reconciled_at).to.be.a(\"string\"));",
+                  "pm.test(\"Reserva CONSUMED\", () => pm.expect(order.reservation.status).to.eql(\"CONSUMED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Un solo cobro para el pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = \"pay-\" + pm.collectionVariables.get(\"key_timeout\");",
+                  "const matches = pm.response.json().filter(p => p.payment_key === key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Existe exactamente 1 cobro para \" + key, () => pm.expect(matches.length).to.eql(1));",
+                  "pm.test(\"El cobro está APPROVED\", () => pm.expect(matches[0].status).to.eql(\"APPROVED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Consultar pedido",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/orders/{{order_timeout_id}}",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders",
+                "{{order_timeout_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Estado final PAID\", () => pm.expect(pm.response.json().status).to.eql(\"PAID\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock tras el timeout",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 3\", () => pm.expect(stock(1)).to.eql(3));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Pago rechazado",
+      "description": "El pedido queda REJECTED y la reserva se libera una sola vez.",
+      "item": [
+        {
+          "name": "Crear pedido (pago rechazado)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_reject}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const problem = pm.response.json();",
+                  "pm.test(\"Status 402\", () => pm.response.to.have.status(402));",
+                  "pm.test(\"Tipo payment-rejected\", () => pm.expect(problem.type).to.include(\"payment-rejected\"));",
+                  "pm.test(\"Pedido REJECTED\", () => pm.expect(problem.order.status).to.eql(\"REJECTED\"));",
+                  "pm.test(\"Motivo PAYMENT_REJECTED\", () => pm.expect(problem.order.failure_reason).to.eql(\"PAYMENT_REJECTED\"));",
+                  "pm.test(\"Reserva RELEASED\", () => pm.expect(problem.order.reservation.status).to.eql(\"RELEASED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock devuelto",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 3\", () => pm.expect(stock(1)).to.eql(3));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Reenviar pedido rechazado (misma clave)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_reject}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 1,\n  \"quantity\": 1,\n  \"payment_mode\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const problem = pm.response.json();",
+                  "pm.test(\"Status 402 (mismo resultado)\", () => pm.response.to.have.status(402));",
+                  "pm.test(\"Header Idempotent-Replayed: true\", () => pm.response.to.have.header(\"Idempotent-Replayed\", \"true\"));",
+                  "pm.test(\"Sigue REJECTED\", () => pm.expect(problem.order.status).to.eql(\"REJECTED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock no se devuelve dos veces",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 3\", () => pm.expect(stock(1)).to.eql(3));",
+                  "pm.test(\"Producto 2 tiene stock 1\", () => pm.expect(stock(2)).to.eql(1));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Un solo cobro rechazado",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const key = \"pay-\" + pm.collectionVariables.get(\"key_reject\");",
+                  "const matches = pm.response.json().filter(p => p.payment_key === key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Existe exactamente 1 cobro para \" + key, () => pm.expect(matches.length).to.eql(1));",
+                  "pm.test(\"El cobro está REJECTED\", () => pm.expect(matches[0].status).to.eql(\"REJECTED\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Otra intención con la última unidad",
+      "description": "Una clave distinta es otra compra; el stock nunca queda negativo.",
+      "item": [
+        {
+          "name": "Comprar la última unidad (clave A)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 2,\n  \"quantity\": 1,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const order = pm.response.json();",
+                  "pm.test(\"Status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"Pedido PAID\", () => pm.expect(order.status).to.eql(\"PAID\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Comprar otra vez (clave B, sin stock)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{key_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"product_id\": 2,\n  \"quantity\": 1,\n  \"payment_mode\": \"approve\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const problem = pm.response.json();",
+                  "pm.test(\"Status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"Tipo out-of-stock\", () => pm.expect(problem.type).to.include(\"out-of-stock\"));",
+                  "pm.test(\"Es un pedido distinto (no replay)\", () => pm.expect(pm.response.headers.has(\"Idempotent-Replayed\")).to.be.false);",
+                  "pm.test(\"Pedido REJECTED por OUT_OF_STOCK\", () => pm.expect(problem.order.failure_reason).to.eql(\"OUT_OF_STOCK\"));",
+                  "pm.test(\"Sin reserva\", () => pm.expect(problem.order.reservation).to.be.null);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Stock en cero, nunca negativo",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/products",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "products"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const products = pm.response.json();",
+                  "const stock = id => products.find(p => p.id === id).stock;",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Producto 1 tiene stock 3\", () => pm.expect(stock(1)).to.eql(3));",
+                  "pm.test(\"Producto 2 tiene stock 0\", () => pm.expect(stock(2)).to.eql(0));",
+                  "pm.test(\"Ningún stock es negativo\", () => products.forEach(p => pm.expect(p.stock).to.be.at.least(0)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Sin cobro para la clave B",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments/pay-{{key_b}}",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments",
+                "pay-{{key_b}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 404: no se intentó cobrar\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Evidencia global",
+      "description": "Verifica que ninguna clave produjo más de un efecto.",
+      "item": [
+        {
+          "name": "Todos los pedidos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{order_url}}/orders",
+              "host": [
+                "{{order_url}}"
+              ],
+              "path": [
+                "orders"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const orders = pm.response.json();",
+                  "const keys = orders.map(o => o.idempotency_key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"5 pedidos en total\", () => pm.expect(orders.length).to.eql(5));",
+                  "pm.test(\"Ninguna Idempotency-Key repetida\", () => pm.expect(new Set(keys).size).to.eql(keys.length));",
+                  "pm.test(\"Ningún pedido abierto\", () => orders.forEach(o => pm.expect([\"PAID\", \"REJECTED\"]).to.include(o.status)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Todos los pagos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{payment_url}}/payments",
+              "host": [
+                "{{payment_url}}"
+              ],
+              "path": [
+                "payments"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const payments = pm.response.json();",
+                  "const keys = payments.map(p => p.payment_key);",
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"4 cobros en total (el pedido sin stock no cobra)\", () => pm.expect(payments.length).to.eql(4));",
+                  "pm.test(\"Ninguna payment_key repetida\", () => pm.expect(new Set(keys).size).to.eql(keys.length));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
