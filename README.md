@@ -8,7 +8,9 @@ Postman ──► Order API :5000 (Flask + orders.db) ──► Payment Mock API
 
 El enunciado completo está en [reto_tecnico_pedidos_pagos_idempotencia.md](reto_tecnico_pedidos_pagos_idempotencia.md).
 
-> 🚧 En construcción: la lógica de ambos servicios, la colección de Postman y las consultas de evidencia están completas. Pendiente: documentación de entrega (PDF y video).
+**Inicio rápido:** `docker compose up --build`, importar la [colección de Postman](postman/idempotent-orders-payments.postman_collection.json) y ejecutarla completa (Run). Después, las [consultas de evidencia](#evidencia-en-sqlite) muestran en SQLite que no hubo efectos duplicados.
+
+Material de entrega: [informe (PDF)](docs/entrega/informe.pdf).
 
 ## Requisitos
 
@@ -151,6 +153,34 @@ Sin stock: REJECTED / OUT_OF_STOCK (sin reserva ni cobro)
 
 ### Recuperación (respuesta perdida)
 
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente (Postman)
+    participant O as Order API
+    participant OD as orders.db
+    participant P as Payment Mock
+    participant PD as payments.db
+
+    C->>O: POST /orders (Idempotency-Key: K, mode=timeout)
+    O->>OD: INSERT orders (PENDING_PAYMENT) + UPDATE stock + INSERT reservation
+    O->>P: POST /payments (Idempotency-Key: pay-K)
+    P->>PD: INSERT payments (APPROVED) + COMMIT
+    Note over P: espera 5 s (respuesta perdida)
+    O--xP: timeout a los 2 s
+    O->>OD: status = PAYMENT_UNCERTAIN
+    O-->>C: 202 PAYMENT_UNCERTAIN
+
+    Note over C,O: (puede reiniciarse la Order API: el estado está en SQLite)
+
+    C->>O: POST /orders (misma clave K)
+    O->>OD: SELECT por idempotency_key → pedido existente, abierto
+    O->>P: GET /payments/pay-K (consulta, no cobra)
+    P-->>O: 200 APPROVED
+    O->>OD: status = PAID, reserva CONSUMED, reconciled_at
+    O-->>C: 201 PAID + Idempotent-Replayed: true
+```
+
 Cuando el cobro termina en timeout, error de red o 5xx, el pedido queda en `PAYMENT_UNCERTAIN` con la reserva intacta. La reconciliación se dispara al reenviar `POST /orders` con la misma clave, al consultar `GET /orders/{id}` o con `POST /orders/{id}/reconcile`. En los tres casos:
 
 1. Consulta `GET /payments/{payment_key}` al mock, **sin cobrar**.
@@ -217,13 +247,22 @@ npx newman run postman/idempotent-orders-payments.postman_collection.json
 
 ### Evidencia en SQLite
 
-[docs/evidencia.sql](docs/evidencia.sql) tiene las consultas que prueban que no hubo efectos duplicados: listado de pedidos, reservas y pagos; duplicados por clave (deben salir vacíos); efectos por pedido; inconsistencias entre pedido y pago; y pedidos recuperados por reconciliación.
+Con Docker, las bases quedan en `data/order/orders.db` y `data/payment/payments.db`. Se pueden abrir en DBeaver o DB Browser for SQLite, de preferencia en solo lectura: abrir `orders.db` y adjuntar la base de pagos con el alias `pay`.
 
-```bash
-python docs/evidencia.py
+```sql
+ATTACH DATABASE 'data/payment/payments.db' AS pay;  -- usar la ruta completa en el cliente
+
+-- Duplicados: las tres consultas deben devolver 0 filas
+SELECT idempotency_key, COUNT(*) FROM orders       GROUP BY 1 HAVING COUNT(*) > 1;
+SELECT order_id,        COUNT(*) FROM reservations GROUP BY 1 HAVING COUNT(*) > 1;
+SELECT payment_key,     COUNT(*) FROM pay.payments GROUP BY 1 HAVING COUNT(*) > 1;
+
+-- Efectos por pedido: como máximo 1 reserva y 1 cobro
+SELECT o.id, o.idempotency_key, o.status,
+       (SELECT COUNT(*) FROM reservations r WHERE r.order_id = o.id)          AS reservas,
+       (SELECT COUNT(*) FROM pay.payments p WHERE p.payment_key = o.payment_key) AS cobros
+FROM orders o ORDER BY o.id;
 ```
-
-El script detecta si las bases son de Docker (`data/`) o locales y abre ambas en solo lectura. También se pueden ejecutar las consultas en DB Browser for SQLite abriendo `orders.db` y adjuntando `payments.db` con el alias `pay`.
 
 ### Escenario extra: servicio de pagos caído
 
@@ -251,8 +290,7 @@ No está en la colección porque requiere detener un servicio:
 │   └── payments.py       registro idempotente de cobros
 ├── postman/              colección exportada con los cinco casos
 ├── docs/
-│   ├── evidencia.sql     consultas de evidencia (sin duplicados)
-│   └── evidencia.py      ejecuta las consultas sobre ambas bases
+│   └── entrega/          informe (HTML editable + PDF)
 ├── docker-compose.yml
 ├── run.ps1 / run.sh      ejecución local de ambos servicios
 └── requirements.txt      dependencias de ambos servicios para un venv local
@@ -260,6 +298,6 @@ No está en la colección porque requiere detener un servicio:
 
 ## Integrantes
 
-- _Pendiente_
-- _Pendiente_
-- _Pendiente_
+- Andy Bryan Alejandro Vera
+- Alisson Yamel Reyes Ricardo
+- Yandris Miguel Rivera Torres

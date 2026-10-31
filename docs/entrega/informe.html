@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Informe: pedidos, pagos simulados e idempotencia</title>
+<!--
+  CÓMO EDITAR Y REGENERAR EL PDF
+  1. Completar todo lo marcado con class="pendiente" (fondo amarillo): link del video.
+  2. Las imágenes (logo y capturas) se leen de docs/imagenes/, que no se versiona: el PDF ya las
+     lleva incrustadas. Para regenerarlo hay que volver a colocar esa carpeta. Cada captura es un
+     <figure class="fig"><img class="captura-img" src="../imagenes/...png"><figcaption>...</figcaption></figure>
+  3. Regenerar el PDF (Windows, desde la raíz del repo):
+     "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf="%CD%\docs\entrega\informe.pdf" "%CD%\docs\entrega\informe.html"
+     O abrir este archivo en el navegador → Imprimir → Guardar como PDF (sin encabezados ni pies de página).
+-->
+<style>
+  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body { font-family: "Segoe UI", Arial, sans-serif; font-size: 10pt; line-height: 1.45; color: #1d1d1f; margin: 0; }
+  h1 { font-size: 20pt; margin: 0 0 4pt; line-height: 1.2; }
+  h2 { font-size: 13.5pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid #2b5797; color: #2b5797; break-after: avoid; }
+  h3 { font-size: 11pt; margin: 12pt 0 4pt; break-after: avoid; }
+  p { margin: 0 0 6pt; }
+  ul, ol { margin: 0 0 6pt; padding-left: 16pt; }
+  li { margin-bottom: 2pt; }
+  code, .mono { font-family: Consolas, "Courier New", monospace; font-size: 8.8pt; }
+  code { background: #f0f2f5; padding: 0 2pt; border-radius: 2pt; }
+  pre { font-family: Consolas, "Courier New", monospace; font-size: 8.2pt; background: #f5f6f8; border: 0.75pt solid #d8dbe0; border-radius: 3pt; padding: 6pt 8pt; margin: 0 0 8pt; white-space: pre-wrap; break-inside: avoid; }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 8pt; break-inside: auto; }
+  tr { break-inside: avoid; }
+  th, td { border: 0.75pt solid #c9ced6; padding: 3pt 5pt; text-align: left; vertical-align: top; }
+  th { background: #e9eef6; font-weight: 600; }
+  table.data { font-size: 8.2pt; }
+  table.data td, table.data th { padding: 2pt 4pt; }
+  table.data td.k { font-family: Consolas, "Courier New", monospace; font-size: 7.6pt; }
+  .ok { color: #1a7f37; font-weight: 600; white-space: nowrap; }
+  .empty { color: #6b7280; font-style: italic; text-align: center; }
+  .pendiente { background: #fff3b0; outline: 0.75pt dashed #c9a400; padding: 0 3pt; }
+  .cover { border: 1pt solid #c9ced6; border-radius: 4pt; padding: 12pt 14pt; margin-bottom: 10pt; }
+  .cover .sub { color: #555; margin-bottom: 10pt; }
+  .cover table td:first-child { width: 28%; font-weight: 600; background: #f5f7fa; }
+  .captura { border: 1pt dashed #c9a400; border-radius: 3pt; min-height: 70pt; padding: 8pt; margin: 0 0 8pt; font-size: 9pt; color: #6b5800; break-inside: avoid; }
+  .captura-img { display: block; max-width: 100%; max-height: 120mm; margin: 0 auto 4pt; border: 0.75pt solid #c9ced6; }
+  .caption { font-size: 8.5pt; color: #555; text-align: center; margin-bottom: 10pt; }
+  .callout { border-left: 3pt solid #2b5797; background: #f3f6fb; padding: 6pt 9pt; margin: 0 0 8pt; break-inside: avoid; }
+  .page-break { break-before: page; }
+  .caratula { height: 262mm; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 13pt; text-align: center; font-family: "Segoe UI", Arial, sans-serif; font-weight: 700; font-size: 12pt; line-height: 1.3; break-after: page; }
+  .caratula img { width: 61.6mm; height: 58mm; margin-bottom: 4pt; }
+  .caratula p { margin: 0; }
+  .caratula p { font-weight: 400; }
+  .caratula .inst p, .caratula p.label, .caratula > p { font-weight: 700; }
+  .caratula .label { margin-bottom: 1pt; }
+  .fig { margin: 0 0 12pt; break-inside: avoid; }
+  .fig .captura-img { max-height: 105mm; }
+  h3.cap-group { margin-top: 14pt; }
+  .small { font-size: 8.5pt; color: #555; }
+  .bloque { break-inside: avoid; }
+  .pregunta { margin: 12pt 0 6pt; }
+  .status { font-family: Consolas, monospace; font-size: 8.6pt; }
+</style>
+</head>
+<body>
+
+<section class="caratula">
+  <img src="../imagenes/Logo%20Upse.png" alt="Logo UPSE">
+  <div class="inst">
+    <p>UNIVERSIDAD ESTATAL PENÍNSULA DE SANTA ELENA</p>
+    <p>FACULTAD SISTEMAS Y TELECOMUNICACIONES</p>
+    <p>CARRERA DE SOFTWARE</p>
+  </div>
+  <div><p class="label">ASIGNATURA:</p><p>SISTEMAS DISTRIBUIDOS Y CLOUD COMPUTING</p></div>
+  <p>ACTIVIDAD</p>
+  <div><p class="label">TEMA:</p><p>RETO TÉCNICO: PEDIDOS, PAGOS SIMULADOS E IDEMPOTENCIA</p></div>
+  <div><p class="label">CURSO:</p><p>SEPTIMO SEMESTRE 7/1</p></div>
+  <div>
+    <p class="label">ELABORADO POR:</p>
+    <p>ANDY BRYAN ALEJANDRO VERA</p>
+    <p>ALISSON YAMEL REYES RICARDO</p>
+    <p>YANDRIS MIGUEL RIVERA TORRES</p>
+  </div>
+  <div><p class="label">DOCENTE:</p><p>ING. ANTHONY ABRAHAN PACHAY ESPINOZA</p></div>
+  <div><p class="label">FECHA:</p><p>31 DE OCTUBRE DEL 2026.</p></div>
+  <p>PERIODO 2026 – 2</p>
+</section>
+
+<div class="cover">
+  <h1>Reto técnico: pedidos, pagos simulados e idempotencia</h1>
+  <div class="sub">Order API y Payment Mock API con Flask + SQLite · Pruebas con Postman</div>
+  <table>
+    <tr><td>Repositorio</td><td><a href="https://github.com/Ali-Rr26/idempotent-orders-payments">https://github.com/Ali-Rr26/idempotent-orders-payments</a></td></tr>
+    <tr><td>Video (3–5 min)</td><td><span class="pendiente">Pegar el enlace del video (verificar que abra en una ventana de incógnito)</span></td></tr>
+    <tr><td>Colección de Postman</td><td><code>postman/idempotent-orders-payments.postman_collection.json</code> (en el repositorio)</td></tr>
+  </table>
+</div>
+
+<h2>1. Solución</h2>
+<p>Dos servicios Flask independientes, cada uno con su propia base SQLite. Ambos se ejecutan en local (dos terminales) o con <code>docker compose up --build</code>; las instrucciones completas están en el README del repositorio.</p>
+<pre>Postman ──► Order API :5000 (orders.db) ──► Payment Mock API :5001 (payments.db)</pre>
+<ul>
+  <li><b>Order API</b>: recibe el pedido con un header <code>Idempotency-Key</code>, reserva el stock y crea el pedido en una sola transacción. Después cobra al mock y expone el estado del pedido. Tablas: <code>products</code>, <code>orders</code> (clave <code>UNIQUE</code>), <code>reservations</code> (una por pedido, <code>UNIQUE</code>).</li>
+  <li><b>Payment Mock API</b>: registra un cobro por clave (<code>payment_key UNIQUE</code>) y simula tres modos. <code>approve</code> y <code>reject</code> responden de inmediato. <code>timeout</code> hace <b>commit</b> del cobro y luego tarda 5 s en responder; la Order API corta a los 2 s. Expone <code>GET /payments/{key}</code> para consultar el resultado.</li>
+  <li>La clave de pago es estable: <code>payment_key = "pay-" + Idempotency-Key</code>. Si la Order API reenvía el cobro, el mock devuelve el registro existente y no crea otro.</li>
+  <li>Los errores usan el formato estándar RFC 9457 (<code>application/problem+json</code>) con un mensaje explicativo; por ejemplo, el 422 cuando se reutiliza una clave con otro cuerpo.</li>
+</ul>
+
+<h3>Estados del pedido</h3>
+<table>
+  <tr><th style="width:24%">Estado</th><th>Significado</th><th style="width:24%">Reserva</th></tr>
+  <tr><td class="status">PENDING_PAYMENT</td><td>Pedido creado y stock reservado; el cobro está en curso.</td><td class="status">RESERVED</td></tr>
+  <tr><td class="status">PAYMENT_UNCERTAIN</td><td>La respuesta del pago se perdió (timeout, error de red o 5xx). No se sabe si hubo cobro: hay que consultar al mock, no volver a cobrar.</td><td class="status">RESERVED</td></tr>
+  <tr><td class="status">PAID</td><td>Final. Pago aprobado (directo o tras reconciliar).</td><td class="status">CONSUMED</td></tr>
+  <tr><td class="status">REJECTED</td><td>Final. <code>PAYMENT_REJECTED</code>: pago rechazado, stock devuelto una vez. <code>OUT_OF_STOCK</code>: no había stock, sin reserva ni cobro.</td><td class="status">RELEASED / ninguna</td></tr>
+</table>
+<p class="small">Los estados finales nunca se sobrescriben: todos los <code>UPDATE</code> de estado llevan <code>WHERE status IN ('PENDING_PAYMENT', 'PAYMENT_UNCERTAIN')</code>.</p>
+
+<h2>2. Casos de prueba: esperado vs. obtenido</h2>
+<p>Resultados obtenidos al ejecutar la colección completa contra los servicios en Docker (Collection Runner / <code>newman</code>): <b>29 requests, 99 assertions, 0 fallos</b>. Los mismos resultados se obtuvieron en ejecución local.</p>
+<table>
+  <tr><th style="width:15%">Caso</th><th style="width:24%">Qué se hizo</th><th style="width:29%">Resultado esperado</th><th style="width:29%">Resultado obtenido</th><th style="width:3%"></th></tr>
+  <tr><td><b>1. Flujo exitoso</b></td><td>Crear pedido del producto 1 con pago aprobado.</td><td>Un pedido, una reserva, un cobro y estado final correcto.</td><td><b>201</b> · <span class="status">PAID</span> · reserva <span class="status">CONSUMED</span> · 1 cobro <span class="status">APPROVED</span> · stock 5 → 4.</td><td class="ok">✔</td></tr>
+  <tr><td><b>2. Misma solicitud repetida</b></td><td>Reenviar dos veces el mismo pedido con la misma clave; luego, misma clave con otro cuerpo.</td><td>Se reconoce la operación previa; no se duplica pedido, reserva ni cobro.</td><td><b>201</b> + <code>Idempotent-Replayed: true</code> con el mismo <code>id</code> · stock sigue en 4 · sigue habiendo 1 cobro. Con otro cuerpo: <b>422</b> <code>idempotency-key-reused</code>, indicando el pedido existente.</td><td class="ok">✔</td></tr>
+  <tr><td><b>3. Respuesta perdida después del cobro</b></td><td>Crear pedido con <code>payment_mode: timeout</code>; consultar el mock; reintentar con la misma clave.</td><td>El backend resuelve el estado consultando el pago y no vuelve a cobrar a ciegas.</td><td>Primer intento: <b>202</b> <span class="status">PAYMENT_UNCERTAIN</span> a los 2,07 s, reserva intacta. El mock ya tenía el cobro <span class="status">APPROVED</span>. Reintento: <b>201</b> <span class="status">PAID</span> con <code>reconciled_at</code> registrado · <b>1 solo cobro</b> · stock 4 → 3.</td><td class="ok">✔</td></tr>
+  <tr><td><b>4. Pago rechazado</b></td><td>Crear pedido con <code>payment_mode: reject</code>; reenviarlo con la misma clave.</td><td>El pedido queda rechazado y la reserva se libera una sola vez.</td><td><b>402</b> <span class="status">REJECTED</span> / <code>PAYMENT_REJECTED</code> · reserva <span class="status">RELEASED</span> · stock vuelve a 3. El reenvío responde 402 (replay) y el stock <b>sigue en 3</b>.</td><td class="ok">✔</td></tr>
+  <tr><td><b>5. Otra intención de compra</b></td><td>Producto 2 con 1 unidad: compra con clave A y luego con clave B.</td><td>La nueva solicitud es una operación distinta y el stock nunca queda negativo.</td><td>A: <b>201</b> <span class="status">PAID</span>. B: <b>409</b> <code>out-of-stock</code>, pedido nuevo <span class="status">REJECTED</span>/<code>OUT_OF_STOCK</code>, sin reserva y sin cobro (404 en el mock) · stock = <b>0</b>.</td><td class="ok">✔</td></tr>
+  <tr><td><b>Persistencia</b></td><td><code>docker compose restart</code> de ambos servicios tras la corrida.</td><td>Los estados siguen consultables después de reiniciar.</td><td>5 pedidos antes y después; 4 pagos en el mock; el pedido del caso 3 sigue <span class="status">PAID</span> con su <code>reconciled_at</code>.</td><td class="ok">✔</td></tr>
+  <tr><td><b>Extra: concurrencia</b></td><td>10 solicitudes simultáneas: (a) con claves distintas por la última unidad; (b) con la misma clave.</td><td>(a) Solo una compra. (b) Un solo pedido y un solo cobro.</td><td>(a) 1×201 y 9×409, stock 0, 1 cobro. (b) 10×201 con el mismo pedido, 1 cobro. El caso (a) se verificó también en Docker con gunicorn (2 procesos × 4 hilos).</td><td class="ok">✔</td></tr>
+  <tr><td><b>Extra: mock caído</b></td><td>Detener el mock, crear pedido, reconciliar; levantar el mock y reconciliar.</td><td>Sin respuesta no se decide nada; al volver se resuelve sin duplicar.</td><td>Sigue <span class="status">PAYMENT_UNCERTAIN</span> mientras el mock está caído. Al volver: el mock responde 404, se cobra con la misma clave y el pedido pasa a <span class="status">PAID</span>.</td><td class="ok">✔</td></tr>
+</table>
+
+<h2 class="page-break">3. Capturas de Postman</h2>
+<p class="small">Capturas de la ejecución manual en Postman, caso por caso (claves fijas <code>caso1-pedido</code>, <code>caso3-pedido</code>, etc.). Cada una muestra el método, la URL, el código de respuesta y el cuerpo devuelto.</p>
+
+<h3 class="cap-group">Caso 1: flujo exitoso</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%201%20-%20Paso%201%20Crear%20pedido%20con%20pago%20aprobado.png" alt="Caso 1 · Paso 1: Crear pedido con pago aprobado"><figcaption class="caption">Figura 1. Caso 1 · Paso 1: Crear pedido con pago aprobado</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%201%20-%20Paso%202%20verificaci%C3%B3n%20de%20reducci%C3%B3n%20de%20stock%20al%20realizar%20un%20pedido.png" alt="Caso 1 · Paso 2: Verificación de reducción de stock al realizar un pedido"><figcaption class="caption">Figura 2. Caso 1 · Paso 2: Verificación de reducción de stock al realizar un pedido</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%201%20-%20Paso%203%20verificaci%C3%B3n%20de%20cobro.png" alt="Caso 1 · Paso 3: Verificación de cobro"><figcaption class="caption">Figura 3. Caso 1 · Paso 3: Verificación de cobro</figcaption></figure>
+<h3 class="cap-group">Caso 2: misma solicitud repetida</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%202%20-%20Paso%201%20Reenv%C3%ADo%20del%20pedido%20del%20caso%201.png" alt="Caso 2 · Paso 1: Reenvío del pedido del caso 1"><figcaption class="caption">Figura 4. Caso 2 · Paso 1: Reenvío del pedido del caso 1</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%202%20-%20Paso%202%20verificaci%C3%B3n%20de%20que%20el%20stock%20no%20cambio%20con%20el%20reenv%C3%ADo.png" alt="Caso 2 · Paso 2: Verificación de que el stock no cambió con el reenvío"><figcaption class="caption">Figura 5. Caso 2 · Paso 2: Verificación de que el stock no cambió con el reenvío</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%202%20-%20Paso%203%20verificaci%C3%B3n%20de%20que%20sigue%20existiendo%20un%20solo%20cobro.png" alt="Caso 2 · Paso 3: Verificación de que sigue existiendo un solo cobro"><figcaption class="caption">Figura 6. Caso 2 · Paso 3: Verificación de que sigue existiendo un solo cobro</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%202%20-%20Paso%204%20verificaci%C3%B3n%20de%20que%20la%20misma%20clave%20no%20se%20pueda%20usar%20para%20un%20pedido%20distinto.png" alt="Caso 2 · Paso 4: Verificación de que la misma clave no se pueda usar para un pedido distinto"><figcaption class="caption">Figura 7. Caso 2 · Paso 4: Verificación de que la misma clave no se pueda usar para un pedido distinto</figcaption></figure>
+<h3 class="cap-group">Caso 3: respuesta perdida después del cobro</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%203%20-%20Paso%201%20Crear%20pedido%20en%20modo%20timeout.png" alt="Caso 3 · Paso 1: Crear pedido en modo timeout"><figcaption class="caption">Figura 8. Caso 3 · Paso 1: Crear pedido en modo timeout</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%203%20-%20Paso%202%20Comprobar%20el%20registr%C3%B3%20del%20cobro.png" alt="Caso 3 · Paso 2: Comprobar el registro del cobro"><figcaption class="caption">Figura 9. Caso 3 · Paso 2: Comprobar el registro del cobro</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%203%20-%20Paso%203%20Reintento%20de%20pedido%20con%20la%20misma%20clave.png" alt="Caso 3 · Paso 3: Reintento de pedido con la misma clave"><figcaption class="caption">Figura 10. Caso 3 · Paso 3: Reintento de pedido con la misma clave</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%203%20-%20Paso%204%20Verificar%20existencia%20de%20un%20solo%20cobro%20para%20el%20pedido%203.png" alt="Caso 3 · Paso 4: Verificar existencia de un solo cobro para el pedido 3"><figcaption class="caption">Figura 11. Caso 3 · Paso 4: Verificar existencia de un solo cobro para el pedido 3</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%203%20-%20Paso%205%20verificaci%C3%B3n%20de%20reducci%C3%B3n%20de%20stock%20al%20realizar%20el%20pedido%203.png" alt="Caso 3 · Paso 5: Verificación de reducción de stock al realizar el pedido 3"><figcaption class="caption">Figura 12. Caso 3 · Paso 5: Verificación de reducción de stock al realizar el pedido 3</figcaption></figure>
+<h3 class="cap-group">Caso 4: pago rechazado</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%204%20-%20Paso%201%20Crear%20pedido%20con%20pago%20rechazado.png" alt="Caso 4 · Paso 1: Crear pedido con pago rechazado"><figcaption class="caption">Figura 13. Caso 4 · Paso 1: Crear pedido con pago rechazado</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%204%20-%20Paso%202%20Verificar%20que%20el%20stock%20volvi%C3%B3%20debido%20a%20que%20el%20pago%20se%20rechaz%C3%B3.png" alt="Caso 4 · Paso 2: Verificar que el stock volvió debido a que el pago se rechazó"><figcaption class="caption">Figura 14. Caso 4 · Paso 2: Verificar que el stock volvió debido a que el pago se rechazó</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%204%20-%20Paso%203%20Reenviar%20el%20pedido%20rechazado.png" alt="Caso 4 · Paso 3: Reenviar el pedido rechazado"><figcaption class="caption">Figura 15. Caso 4 · Paso 3: Reenviar el pedido rechazado</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%204%20-%20Paso%204%20Verificar%20que%20el%20stock%20NO%20se%20devolvi%C3%B3%20dos%20veces%20tras%20el%20reenv%C3%ADo%20del%20pedido%204.png" alt="Caso 4 · Paso 4: Verificar que el stock NO se devolvió dos veces tras el reenvío del pedido 4"><figcaption class="caption">Figura 16. Caso 4 · Paso 4: Verificar que el stock NO se devolvió dos veces tras el reenvío del pedido 4</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%204%20-%20Paso%205%20Verificaci%C3%B3n%20del%20cobro%20rechazado%20.png" alt="Caso 4 · Paso 5: Verificación del cobro rechazado"><figcaption class="caption">Figura 17. Caso 4 · Paso 5: Verificación del cobro rechazado</figcaption></figure>
+<h3 class="cap-group">Caso 5: otra intención de compra con la última unidad</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%205%20-%20Paso%201%20Creaci%C3%B3n%20de%20pedido%20para%20comprar%20la%20%C3%BAltima%20unidad%20%28clave%20A%29.png" alt="Caso 5 · Paso 1: Creación de pedido para comprar la última unidad (clave A)"><figcaption class="caption">Figura 18. Caso 5 · Paso 1: Creación de pedido para comprar la última unidad (clave A)</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%205%20-%20Paso%202%20Intento%20de%20comprar%20otra%20vez%20con%20otra%20clave%20%28clave%20B%29%20y%20stock%20insuficiente..png" alt="Caso 5 · Paso 2: Intento de comprar otra vez con otra clave (clave B) y stock insuficiente"><figcaption class="caption">Figura 19. Caso 5 · Paso 2: Intento de comprar otra vez con otra clave (clave B) y stock insuficiente</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%205%20-%20Paso%203%20Verificar%20que%20el%20stock%20est%C3%A1%20en%200%20y%20que%20no%20es%20un%20n%C3%BAmero%20negativo.png" alt="Caso 5 · Paso 3: Verificar que el stock está en 0 y que no es un número negativo"><figcaption class="caption">Figura 20. Caso 5 · Paso 3: Verificar que el stock está en 0 y que no es un número negativo</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Caso%205%20-%20Paso%204%20Verificar%20que%20no%20se%20intent%C3%B3%20cobrar%20al%20realizar%20el%20pedido%205%20con%20clave%20B.png" alt="Caso 5 · Paso 4: Verificar que no se intentó cobrar al realizar el pedido 5 con clave B"><figcaption class="caption">Figura 21. Caso 5 · Paso 4: Verificar que no se intentó cobrar al realizar el pedido 5 con clave B</figcaption></figure>
+<h3 class="cap-group">Verificación final</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/Verificaci%C3%B3n%20final%20-%20visualizaci%C3%B3n%20de%20todos%20los%20cobros%20captura%201.png" alt="Verificación final: Visualización de todos los cobros captura 1"><figcaption class="caption">Figura 22. Verificación final: Visualización de todos los cobros captura 1</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Verificaci%C3%B3n%20final%20-%20visualizaci%C3%B3n%20de%20todos%20los%20cobros%20captura%202.png" alt="Verificación final: Visualización de todos los cobros captura 2"><figcaption class="caption">Figura 23. Verificación final: Visualización de todos los cobros captura 2</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Verificaci%C3%B3n%20final%20-%20visualizaci%C3%B3n%20de%20todos%20los%20pedidos%20captura%201.png" alt="Verificación final: Visualización de todos los pedidos captura 1"><figcaption class="caption">Figura 24. Verificación final: Visualización de todos los pedidos captura 1</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Verificaci%C3%B3n%20final%20-%20visualizaci%C3%B3n%20de%20todos%20los%20pedidos%20captura%202.png" alt="Verificación final: Visualización de todos los pedidos captura 2"><figcaption class="caption">Figura 25. Verificación final: Visualización de todos los pedidos captura 2</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/Verificaci%C3%B3n%20final%20-%20visualizaci%C3%B3n%20de%20todos%20los%20pedidos%20captura%203.png" alt="Verificación final: Visualización de todos los pedidos captura 3"><figcaption class="caption">Figura 26. Verificación final: Visualización de todos los pedidos captura 3</figcaption></figure>
+
+<h2 class="page-break">4. Evidencia en SQLite</h2>
+<p>Las bases revisadas son las de la ejecución manual de la sección 3 (claves <code>caso1-pedido</code>, <code>caso3-pedido</code>, <code>caso4-pedido</code>, <code>caso5-pedidoA</code> y <code>caso5-pedidoB</code>). Se abrieron en DBeaver en modo solo lectura: <code>orders.db</code> como conexión principal y <code>payments.db</code> adjunta como <code>pay</code>.</p>
+
+<div class="bloque"><h3>Tablas de orders.db</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%201%20-%20orders.png" alt="Tabla orders: 5 pedidos, uno por Idempotency-Key"><figcaption class="caption">Figura 27. Tabla orders: 5 pedidos, uno por Idempotency-Key</figcaption></figure></div>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%202%20-%20products.png" alt="Tabla products: stock final 3 y 0"><figcaption class="caption">Figura 28. Tabla products: stock final 3 y 0</figcaption></figure>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%203%20-%20reservations.png" alt="Tabla reservations: una reserva por pedido"><figcaption class="caption">Figura 29. Tabla reservations: una reserva por pedido</figcaption></figure>
+
+<div class="bloque"><h3>4.1 Duplicados: las tres consultas deben devolver 0 filas</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%204.1%20-%20verificaci%C3%B3n%20de%20duplicados.png" alt="Verificación de duplicados: 0 en reservations, orders y payments"><figcaption class="caption">Figura 30. Verificación de duplicados: 0 en reservations, orders y payments</figcaption></figure></div>
+
+<div class="bloque"><h3>4.2 Efectos por pedido: como máximo 1 reserva y 1 cobro por clave</h3>
+<p class="small">Aunque se enviaron varios <code>POST /orders</code> repetidos con la misma clave (casos 2, 3 y 4), solo existen 5 pedidos: los reenvíos y el intento con otro cuerpo (rechazado con 422) no crearon filas nuevas.</p>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%204.2%20-%20Efectos%20por%20pedido.png" alt="Efectos por pedido: como máximo 1 reserva y 1 cobro"><figcaption class="caption">Figura 31. Efectos por pedido: como máximo 1 reserva y 1 cobro</figcaption></figure></div>
+
+<div class="bloque"><h3>4.3 Pedidos con su reserva (orders.db)</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%204.3%20-%20Pedidos%20con%20su%20reserva.png" alt="Pedidos con su reserva"><figcaption class="caption">Figura 32. Pedidos con su reserva</figcaption></figure></div>
+
+<div class="bloque"><h3>4.4 Pagos registrados (payments.db)</h3>
+<p class="small">El cobro del pedido 2 se registró a las 18:34:22.695, antes del timeout. La Order API no recibió la respuesta, se reinició y a las 18:38:30.514, al reintentar con la misma clave, reconcilió consultando ese mismo registro sin crear otro. El pedido 5 (clave B) no tiene cobro.</p>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%204.4%20-%20Pagos%20registrados.png" alt="Pagos registrados en el mock: 4 cobros, uno por payment_key"><figcaption class="caption">Figura 33. Pagos registrados en el mock: 4 cobros, uno por payment_key</figcaption></figure></div>
+
+<div class="bloque"><h3>4.5 Stock final</h3>
+<figure class="fig"><img class="captura-img" src="../imagenes/SQLite%204.5%20-%20Stock%20final.png" alt="Stock final"><figcaption class="caption">Figura 34. Stock final</figcaption></figure></div>
+
+<h2 class="page-break">5. Conclusión</h2>
+<p class="pregunta"><b>¿Qué estado persistieron para recuperarse?</b></p>
+<p>En <code>orders.db</code> guardamos la <code>Idempotency-Key</code> (única), el hash del cuerpo, el <b>estado del pedido</b> (incluido el estado intermedio <code>PAYMENT_UNCERTAIN</code>), la <b><code>payment_key</code> estable</b> derivada de la clave y la reserva con su propio estado (<code>RESERVED</code> / <code>CONSUMED</code> / <code>RELEASED</code>). En <code>payments.db</code>, el mock guarda el resultado de cada cobro bajo su <code>payment_key</code> única, y hace commit <i>antes</i> de responder. Con eso, después de una respuesta perdida o un reinicio, la Order API sabe qué pedidos quedaron abiertos y a qué clave preguntar: consulta <code>GET /payments/{payment_key}</code> y aplica el resultado guardado, en lugar de volver a cobrar a ciegas.</p>
+<p class="pregunta"><b>¿Cómo comprobaron que no hubo efectos duplicados?</b></p>
+<p>En tres niveles:</p>
+<ol>
+  <li><b>Restricciones en la base:</b> <code>UNIQUE</code> en <code>orders.idempotency_key</code>, <code>reservations.order_id</code> y <code>payments.payment_key</code>; <code>CHECK (stock &gt;= 0)</code>.</li>
+  <li><b>Updates condicionales:</b> <code>stock = stock - q WHERE stock &gt;= q</code> para reservar, y <code>WHERE status = 'RESERVED'</code> para que la compensación devuelva stock una sola vez.</li>
+  <li><b>Verificación:</b> 99 assertions de Postman, que comprueban mismo <code>id</code>, header de replay, stock y cantidad de cobros después de cada reintento. Además, las consultas <code>GROUP BY … HAVING COUNT(*) &gt; 1</code> y la de inconsistencias devuelven 0 filas, y las pruebas de concurrencia producen un solo pedido y un solo cobro.</li>
+</ol>
+<div class="callout">No prometemos "exactamente una vez" en la red: un cobro puede enviarse más de una vez. Garantizamos <b>como máximo un efecto por clave</b> y que el estado real siempre se puede averiguar después de una falla.</div>
+
+</body>
+</html>
