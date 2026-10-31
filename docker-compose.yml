@@ -1,0 +1,34 @@
+services:
+  payment-mock:
+    build: ./payment_mock_api
+    ports:
+      - "5001:5001"
+    environment:
+      DB_PATH: /data/payments.db
+      TIMEOUT_DELAY_S: "5"
+    volumes:
+      - ./data/payment:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  order-api:
+    build: ./order_api
+    ports:
+      - "5000:5000"
+    environment:
+      DB_PATH: /data/orders.db
+      PAYMENT_URL: http://payment-mock:5001
+      PAYMENT_TIMEOUT_S: "2"
+    volumes:
+      - ./data/order:/data
+    depends_on:
+      payment-mock:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
