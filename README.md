@@ -8,7 +8,7 @@ Postman ──► Order API :5000 (Flask + orders.db) ──► Payment Mock API
 
 El enunciado completo está en [reto_tecnico_pedidos_pagos_idempotencia.md](reto_tecnico_pedidos_pagos_idempotencia.md).
 
-> 🚧 En construcción: por ahora está listo el esqueleto de ambos servicios (configuración, base de datos, health checks y Docker). El flujo de pedidos y pagos se agrega en las siguientes fases.
+> 🚧 En construcción: ya funcionan el mock de pagos (idempotente, con aprobación, rechazo y timeout) y el flujo principal de pedidos (reserva de stock + cobro). Pendiente: reintentos idempotentes de pedidos, reconciliación de pagos inciertos y compensación de rechazos.
 
 ## Requisitos
 
@@ -84,7 +84,7 @@ Las dos formas de ejecución usan las mismas variables de entorno; en local se a
 |---|---|---|---|
 | `DB_PATH` | ambos | `<carpeta del servicio>/orders.db` · `payments.db` | `/data/orders.db` · `/data/payments.db` |
 | `PORT` | ambos | `5000` · `5001` | `5000` · `5001` |
-| `PAYMENT_URL` | Order API | `http://localhost:5001` | `http://payment-mock:5001` |
+| `PAYMENT_URL` | Order API | `http://127.0.0.1:5001` | `http://payment-mock:5001` |
 | `PAYMENT_TIMEOUT_S` | Order API | `2` | `2` |
 | `TIMEOUT_DELAY_S` | Payment Mock | `5` | `5` |
 
@@ -94,12 +94,48 @@ Las dos formas de ejecución usan las mismas variables de entorno; en local se a
 |---|---|---|---|
 | Order API | GET | `/health` | Estado del servicio y de la base |
 | Order API | GET | `/products` | Productos y stock actual |
+| Order API | POST | `/orders` | Crea un pedido, reserva stock y cobra (requiere `Idempotency-Key`) |
+| Order API | GET | `/orders` | Todos los pedidos con su reserva |
+| Order API | GET | `/orders/{id}` | Un pedido con su reserva |
 | Order API | POST | `/admin/reset` | Borra pedidos y reservas y restaura el stock inicial |
 | Payment Mock | GET | `/health` | Estado del servicio y de la base |
+| Payment Mock | POST | `/payments` | Registra un cobro, una sola vez por `Idempotency-Key` |
+| Payment Mock | GET | `/payments/{payment_key}` | Resultado persistido de un cobro (404 si no existe) |
 | Payment Mock | GET | `/payments` | Todos los pagos registrados |
 | Payment Mock | POST | `/admin/reset` | Borra todos los pagos |
 
 Datos iniciales: producto **1** (stock 5) y producto **2** (stock 1, para el caso de la última unidad).
+
+### Crear un pedido
+
+```http
+POST /orders
+Idempotency-Key: 3f6c1e2a-7b9d-4c1e-9a55-0d2f8e4b7a10
+Content-Type: application/json
+
+{ "product_id": 1, "quantity": 1, "payment_mode": "approve" }
+```
+
+`quantity` es opcional (por defecto 1). `payment_mode` le indica al mock qué simular: `approve` (por defecto), `reject` o `timeout`.
+
+| Resultado | HTTP | Estado del pedido |
+|---|---|---|
+| Pago aprobado | 201 | `PAID`, reserva `CONSUMED` |
+| Respuesta del pago perdida (timeout, error de red, 5xx) | 202 | `PAYMENT_UNCERTAIN`, reserva `RESERVED` |
+| Pago rechazado | 402 | `REJECTED` (`PAYMENT_REJECTED`) |
+| Sin stock | 409 | `REJECTED` (`OUT_OF_STOCK`), sin reserva ni cobro |
+
+El stock se descuenta con `UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?` dentro de la misma transacción que crea el pedido, así nunca queda negativo aunque lleguen compras simultáneas.
+
+### Simulación de pagos
+
+| `mode` | Qué registra el mock | Qué responde |
+|---|---|---|
+| `approve` | Pago `APPROVED` | 201 inmediato |
+| `reject` | Pago `REJECTED` | 201 inmediato |
+| `timeout` | Pago `APPROVED` (el cobro **sí** ocurre) | Espera `TIMEOUT_DELAY_S` (5 s) antes de responder; la Order API corta a los 2 s |
+
+Si se reenvía la misma clave, el mock devuelve el pago guardado (200 + header `Idempotent-Replayed: true`) sin cobrar de nuevo. Con la misma clave y un monto distinto responde 422.
 
 ### Formato de errores
 
@@ -122,9 +158,12 @@ Todos los errores siguen [RFC 9457 Problem Details](https://www.rfc-editor.org/r
 │   ├── config.py         variables de entorno
 │   ├── db.py             conexión, esquema, datos iniciales
 │   ├── errors.py         errores problem+json
+│   ├── orders.py         flujo del pedido: reserva, cobro y estados
+│   ├── payment_client.py llamadas HTTP al mock de pagos
 │   ├── schema.sql
 │   └── Dockerfile
 ├── payment_mock_api/     Payment Mock API (Flask + SQLite propia)
+│   └── payments.py       registro idempotente de cobros
 ├── docker-compose.yml
 ├── run.ps1 / run.sh      ejecución local de ambos servicios
 └── requirements.txt      dependencias de ambos servicios para un venv local
