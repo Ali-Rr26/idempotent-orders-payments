@@ -1,0 +1,3 @@
+# Dependencias para correr ambos servicios en un solo venv local.
+-r order_api/requirements.txt
+-r payment_mock_api/requirements.txt
